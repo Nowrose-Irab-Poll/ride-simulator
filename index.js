@@ -22,6 +22,21 @@ app.use(
   })
 );
 
+// Middleware to verify JWT token
+const verifyToken = (req, res, next) => {
+  const token = req.headers?.token;
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.driverPhone = decoded.phone;
+    req.driverId = decoded.driver_id;
+    next();
+  } catch (error) {
+    res.status(400).json({ message: "Invalid token" });
+  }
+};
+
 // Register rider
 app.post("/riders/create", async (req, res) => {
   const { name, phone, email } = req.body;
@@ -48,13 +63,15 @@ app.post("/riders/create", async (req, res) => {
     response.type = "rider";
     res.status(201).json(response);
   } catch (error) {
-    // Check if error is due to unique violation (duplicate phone number)
-    console.error("Error inserting rider:", error);
-    const reply = handleErrorResponse(error);
-    if (reply) {
-      const { status, message } = reply;
-      return res.status(status).json({ message });
+    // Check if error is due to unique violation
+    if (error.code === "23505" && error.constraint === "phone") {
+      return res
+        .status(409)
+        .json({ message: "Phone number already registered" });
+    } else if (error.code === "23505" && error.constraint === "email") {
+      return res.status(409).json({ message: "Email already registered" });
     } else {
+      console.error("Error inserting rider:", error);
       return res.status(500).json({ message: "Internal server error" });
     }
   }
@@ -82,13 +99,13 @@ app.post("/drivers/create", async (req, res) => {
     response.type = "driver";
     res.status(201).json(response);
   } catch (error) {
-    // Check if error is due to unique violation (duplicate phone number)
-    console.error("Error inserting rider:", error);
-    const reply = handleErrorResponse(error);
-    if (reply) {
-      const { status, message } = reply;
-      return res.status(status).json({ message });
+    // Check if error is due to unique violation
+    if (error.code === "23505" && error.constraint === "drivers_phone_key") {
+      return res
+        .status(409)
+        .json({ message: "Phone number already registered" });
     } else {
+      console.error("Error inserting rider:", error);
       return res.status(500).json({ message: "Internal server error" });
     }
   }
@@ -96,49 +113,95 @@ app.post("/drivers/create", async (req, res) => {
 
 // Driver login
 app.post("/drivers/login", async (req, res) => {
-  const { phone } = req.body;
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      res.status(400).json({ message: "Phone not found" });
+      return;
+    }
 
-  // Generate OTP
-  const otp = generateOTP();
+    // Check if driver exists in the database
+    const client = await pool.connect();
+    const result = await client.query(
+      "SELECT * FROM Drivers WHERE phone = $1",
+      [phone]
+    );
+    const driverEntity = result.rows[0];
+    client.release();
 
-  // In a real application, we would send this OTP to the driver's phone number via SMS
-  console.log(`OTP for ${phone}: ${otp}`);
+    if (!driverEntity) {
+      res.status(401).json({ message: "Driver not registered" });
+      return;
+    }
 
-  otpMap.set(phone, otp);
-  res.status(200).json({ message: "OTP sent successfully" });
+    const otp = generateOTP();
+
+    // In a real application, we would send this OTP to the driver's phone number via SMS
+    console.log(`OTP for ${phone}: ${otp}`);
+
+    otpMap.set(phone, otp);
+    res.status(200).json({ message: "OTP sent successfully" });
+  } catch (e) {
+    return res.status(500).json({ message: "Internal server error" });
+  }
 });
 
-// Verify OTP and generate JWT token API endpoint
-app.post("/drivers/verify", (req, res) => {
-  const { phone, otp } = req.body;
+// Verify OTP
+app.post("/drivers/verify", async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
 
-  // Check if OTP is valid
-  if (otpMap.has(phone) && otpMap.get(phone) == otp) {
-    const token = jwt.sign({ phone }, process.env.SECRET_KEY, {
-      expiresIn: "1h",
+    // Check if OTP is valid
+    if (phone && otp && otpMap.has(phone) && otpMap.get(phone) == otp) {
+      // Check if driver exists in the database
+
+      const client = await pool.connect();
+      const result = await client.query(
+        "SELECT * FROM Drivers WHERE phone = $1",
+        [phone]
+      );
+      client.release();
+
+      if (result.rows.length > 0) {
+        const driverEntity = result.rows[0];
+        // Driver exists, generate JWT token
+        const token = jwt.sign(driverEntity, process.env.JWT_SECRET, {
+          expiresIn: "1h",
+        });
+
+        otpMap.delete(phone);
+
+        res.status(200).json({ token });
+      } else {
+        // Driver not found in the database
+        res.status(404).json({ message: "Driver not found" });
+      }
+    } else {
+      // Invalid OTP
+      res.status(400).json({ message: "Invalid OTP" });
+    }
+  } catch (e) {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Update driver location
+app.post("/drivers/location", verifyToken, (req, res) => {
+  try {
+    const { latitude, longitude } = req.body;
+    const { driverPhone, driverId } = req;
+    console.log("Location Ping:", {
+      latitude,
+      longitude,
+      driverPhone,
+      driverId,
     });
 
-    otpMap.delete(phone);
-
-    res.status(200).json({ token });
-  } else {
-    // Invalid OTP
-    res.status(400).json({ message: "Invalid OTP" });
+    res.status(200).json({ status: "Location updated" });
+  } catch (e) {
+    return res.status(500).json({ message: "Internal server error" });
   }
 });
-
-const handleErrorResponse = (error) => {
-  if (error.code === "23505") {
-    if (error.constraint === "phone") {
-      return { message: "Phone number already registered", status: 409 };
-    }
-    if (error.constraint === "email") {
-      return { message: "Email already registered", status: 409 };
-    }
-  }
-
-  return false;
-};
 
 app.get("/", (req, res) => {
   response.json({ info: "Ride Simulator API" });
@@ -169,5 +232,7 @@ const validatePhone = (phone) => {
 const otpMap = new Map();
 const generateOTP = (phone) => {
   // will be generating otp from any other API
-  return "123456";
+  return "123456"; // default otp
+
+  //   return Math.floor(100000 + Math.random() * 900000);
 };
