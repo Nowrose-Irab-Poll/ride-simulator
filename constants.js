@@ -3,7 +3,7 @@ const EXPIRATION = {
   // seconds
   DEFAULT: 30,
   OTP: 60,
-  LOCATION: 30,
+  LOCATION: 3000,
 };
 const REDIS_PATTERN = {
   DRIVER_LOCATION: "location?driverId=",
@@ -27,6 +27,7 @@ const STATUS_MESSAGES = {
   SUCCESS_LOCATION: "Location updated",
   INACTIVE_DRIVER: "Driver not online",
   UNAUTHORIZED: "Unauthorized",
+  NOT_FOUND_LAT_LON: "Latitude or Longitude not found",
 };
 
 module.exports = { EXPIRATION, REDIS_PATTERN, STATUS_MESSAGES };

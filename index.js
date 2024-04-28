@@ -14,6 +14,7 @@ const {
   validatePhone,
   sendOTPtoPhone,
   generateOTP,
+  findNearestDriver,
 } = require("./util.js");
 
 const app = express();
@@ -322,29 +323,37 @@ app.post("/riders/verify", async (req, res) => {
 // Update driver location
 app.post("/drivers/location", verifyToken, (req, res) => {
   try {
-    const { latitude, longitude } = req.body;
     const { phone, driver_id, role } = req.decoded;
-    console.log("Location Ping:", {
-      latitude,
-      longitude,
-      phone,
-      driver_id,
-      role,
-    });
+    if (role == "driver") {
+      const { latitude, longitude } = req.body;
+      if (latitude && longitude) {
+        console.log("Location Ping:", {
+          latitude,
+          longitude,
+          phone,
+          driver_id,
+          role,
+        });
 
-    // updating driver's location in redis
-    redisClient.setEx(
-      `${REDIS_PATTERN.DRIVER_LOCATION}${driver_id}`,
-      EXPIRATION.LOCATION,
-      JSON.stringify({
-        latitude,
-        longitude,
-        phone,
-        role,
-      })
-    );
+        // updating driver's location in redis
+        redisClient.setEx(
+          `${REDIS_PATTERN.DRIVER_LOCATION}${driver_id}`,
+          EXPIRATION.LOCATION,
+          JSON.stringify({
+            latitude,
+            longitude,
+            phone,
+            role,
+          })
+        );
 
-    res.status(200).json({ status: STATUS_MESSAGES.SUCCESS_LOCATION });
+        res.status(200).json({ status: STATUS_MESSAGES.SUCCESS_LOCATION });
+      } else {
+        res.status(400).json({ message: STATUS_MESSAGES.NOT_FOUND_LAT_LON });
+      }
+    } else {
+      res.status(401).json({ message: STATUS_MESSAGES.UNAUTHORIZED });
+    }
   } catch (e) {
     return res
       .status(500)
@@ -370,10 +379,74 @@ app.get("/drivers/location/all", async (req, res) => {
   }
 });
 
+// finding a nearest driver available
+app.post("/drivers/location/nearest", verifyToken, async (req, res) => {
+  try {
+    const { phone, rider_id, role } = req.decoded;
+
+    // check if rider or not
+    // decoded data from token
+    console.log("Find nearest driver Request from:", {
+      phone,
+      rider_id,
+      role,
+    });
+    if (role == "rider") {
+      const { latitude, longitude } = req.body;
+      if (latitude && longitude) {
+        console.log("Rider Location Ping:", {
+          latitude,
+          longitude,
+          phone,
+          rider_id,
+          role,
+        });
+
+        // fetching all active drivers from  redis
+        const data = await redisClient.keys(
+          `${REDIS_PATTERN.DRIVER_LOCATION}*`
+        );
+        console.log(data);
+        const allActiveDrivers = data.map((item) =>
+          item.substring(REDIS_PATTERN.DRIVER_LOCATION.length)
+        );
+
+        // fetching live locations of active drivers
+        const activeDriverLocations = await Promise.all(
+          allActiveDrivers.map(async (driverId) => {
+            return JSON.parse(
+              await redisClient.get(
+                `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`
+              )
+            );
+          })
+        );
+
+        // finding nearest driver
+        const riderLocation = { latitude, longitude };
+        const nearestDriver = findNearestDriver(
+          riderLocation,
+          activeDriverLocations
+        );
+        console.log("nearestDriver:", nearestDriver);
+        res.json(nearestDriver);
+      } else {
+        res.status(400).json({ message: STATUS_MESSAGES.NOT_FOUND_LAT_LON });
+      }
+    } else {
+      res.status(401).json({ message: STATUS_MESSAGES.UNAUTHORIZED });
+    }
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
+  }
+});
+
 // get live location of driver by id
 app.get("/drivers/location/:id", verifyToken, async (req, res) => {
   try {
-    // fetching driver's live location from  redis
+    // decoded data from token
     const { phone, rider_id, role } = req.decoded;
 
     // check if rider or not
@@ -382,9 +455,12 @@ app.get("/drivers/location/:id", verifyToken, async (req, res) => {
       console.log("Request received from:", { phone, rider_id, role }, "for:", {
         driverId,
       });
+
+      // fetching driver's live location from  redis
       const data = await redisClient.get(
         `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`
       );
+
       if (data) res.status(200).json(JSON.parse(data));
       else res.status(404).json({ message: STATUS_MESSAGES.INACTIVE_DRIVER });
     } else {
