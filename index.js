@@ -172,7 +172,45 @@ app.post("/drivers/login", async (req, res) => {
   }
 });
 
-// Verify OTP
+// Rider login
+app.post("/riders/login", async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      res.status(400).json({ message: "Phone not found" });
+      return;
+    }
+
+    // Check if driver exists in the database
+    const client = await pool.connect();
+    const result = await client.query("SELECT * FROM Riders WHERE phone = $1", [
+      phone,
+    ]);
+    const riderEntity = result.rows[0];
+    client.release();
+
+    if (!riderEntity) {
+      res.status(401).json({ message: "Driver not registered" });
+      return;
+    }
+
+    const otp = generateOTP();
+
+    redisClient.setEx(
+      `${REDIS_PATTERN.OTP}${phone}`,
+      EXPIRATION.OTP,
+      JSON.stringify(otp)
+    );
+
+    sendOTPtoPhone(phone, otp);
+
+    res.status(200).json({ message: "OTP sent successfully" });
+  } catch (e) {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Verify Driver OTP
 app.post("/drivers/verify", async (req, res) => {
   try {
     const { phone, otp } = req.body;
@@ -196,6 +234,53 @@ app.post("/drivers/verify", async (req, res) => {
           const driverEntity = result.rows[0];
           // Driver exists, generate JWT token
           const token = jwt.sign(driverEntity, process.env.JWT_SECRET, {
+            expiresIn: "1h",
+          });
+
+          redisClient.del(`${REDIS_PATTERN.OTP}${phone}`);
+
+          res.status(200).json({ token });
+        } else {
+          // Driver not found in the database
+          res.status(404).json({ message: "Driver not found" });
+        }
+      } else {
+        // Invalid OTP
+        res.status(400).json({ message: "Invalid OTP" });
+      }
+    } else {
+      // data missing
+      res.status(400).json({ message: "Phone or OTP missing" });
+    }
+  } catch (e) {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Verify Rider OTP
+app.post("/riders/verify", async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+
+    // Check if phone and OTP exists
+    if (phone && otp) {
+      // Check if OTP is valid
+
+      const sentOTP = await redisClient.get(`${REDIS_PATTERN.OTP}${phone}`);
+      if (sentOTP != otp) {
+        // Check if driver exists in the database
+
+        const client = await pool.connect();
+        const result = await client.query(
+          "SELECT * FROM Riders WHERE phone = $1",
+          [phone]
+        );
+        client.release();
+
+        if (result.rows.length > 0) {
+          const riderEntity = result.rows[0];
+          // Driver exists, generate JWT token
+          const token = jwt.sign(riderEntity, process.env.JWT_SECRET, {
             expiresIn: "1h",
           });
 
@@ -248,12 +333,13 @@ app.post("/drivers/location", verifyToken, (req, res) => {
 });
 
 // get all active drivers
+// for debugging purpose, so no token verification added
 app.get("/drivers/location/all", async (req, res) => {
   try {
     const data = await redisClient.keys(`${REDIS_PATTERN.DRIVER_LOCATION}*`);
     console.log(data);
     const allActiveDrivers = data.map((item) =>
-      item.substring(DRIVER_LOCATION.length)
+      item.substring(REDIS_PATTERN.DRIVER_LOCATION.length)
     );
     res.json(allActiveDrivers);
   } catch (e) {
@@ -262,13 +348,14 @@ app.get("/drivers/location/all", async (req, res) => {
 });
 
 // get live location of driver by id
-app.get("/drivers/location/:id", async (req, res) => {
+app.get("/drivers/location/:id", verifyToken, async (req, res) => {
   try {
     const driverId = req.params.id;
     const data = await redisClient.get(
       `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`
     );
-    res.json(data);
+    if (data) res.status(200).json(JSON.parse(data));
+    else res.status(404).json({ message: "Driver not active" });
   } catch (e) {
     return res.status(500).json({ message: "Internal server error" });
   }
