@@ -1,11 +1,28 @@
+// dependencies
 const express = require("express");
 const bodyParser = require("body-parser");
 const jwt = require("jsonwebtoken");
+const Redis = require("redis");
 
 const app = express();
 require("dotenv").config();
 
+// API port
 const port = process.env.PORT || 3000;
+
+// redis config
+const EXPIRATION = {
+  // seconds
+  DEFAULT: 30,
+  OTP: 60,
+  LOCATION: 30,
+};
+const REDIS_PATTERN = {
+  DRIVER_LOCATION: "location?driverId=",
+  OTP: "otp?phone=",
+};
+
+// Postgresql Client Initialization
 const { Pool } = require("pg");
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -14,6 +31,11 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
 });
+
+// Redis Client Initiazation
+const redisClient = Redis.createClient();
+redisClient.on("error", (err) => console.log("Redis Client Error", err));
+redisClient.connect();
 
 app.use(bodyParser.json());
 app.use(
@@ -136,10 +158,14 @@ app.post("/drivers/login", async (req, res) => {
 
     const otp = generateOTP();
 
-    // In a real application, we would send this OTP to the driver's phone number via SMS
-    console.log(`OTP for ${phone}: ${otp}`);
+    redisClient.setEx(
+      `${REDIS_PATTERN.OTP}${phone}`,
+      EXPIRATION.OTP,
+      JSON.stringify(otp)
+    );
 
-    otpMap.set(phone, otp);
+    sendOTPtoPhone(phone, otp);
+
     res.status(200).json({ message: "OTP sent successfully" });
   } catch (e) {
     return res.status(500).json({ message: "Internal server error" });
@@ -151,34 +177,42 @@ app.post("/drivers/verify", async (req, res) => {
   try {
     const { phone, otp } = req.body;
 
-    // Check if OTP is valid
-    if (phone && otp && otpMap.has(phone) && otpMap.get(phone) == otp) {
-      // Check if driver exists in the database
+    // Check if phone and OTP exists
+    if (phone && otp) {
+      // Check if OTP is valid
 
-      const client = await pool.connect();
-      const result = await client.query(
-        "SELECT * FROM Drivers WHERE phone = $1",
-        [phone]
-      );
-      client.release();
+      const sentOTP = await redisClient.get(`${REDIS_PATTERN.OTP}${phone}`);
+      if (sentOTP != otp) {
+        // Check if driver exists in the database
 
-      if (result.rows.length > 0) {
-        const driverEntity = result.rows[0];
-        // Driver exists, generate JWT token
-        const token = jwt.sign(driverEntity, process.env.JWT_SECRET, {
-          expiresIn: "1h",
-        });
+        const client = await pool.connect();
+        const result = await client.query(
+          "SELECT * FROM Drivers WHERE phone = $1",
+          [phone]
+        );
+        client.release();
 
-        otpMap.delete(phone);
+        if (result.rows.length > 0) {
+          const driverEntity = result.rows[0];
+          // Driver exists, generate JWT token
+          const token = jwt.sign(driverEntity, process.env.JWT_SECRET, {
+            expiresIn: "1h",
+          });
 
-        res.status(200).json({ token });
+          redisClient.del(`${REDIS_PATTERN.OTP}${phone}`);
+
+          res.status(200).json({ token });
+        } else {
+          // Driver not found in the database
+          res.status(404).json({ message: "Driver not found" });
+        }
       } else {
-        // Driver not found in the database
-        res.status(404).json({ message: "Driver not found" });
+        // Invalid OTP
+        res.status(400).json({ message: "Invalid OTP" });
       }
     } else {
-      // Invalid OTP
-      res.status(400).json({ message: "Invalid OTP" });
+      // data missing
+      res.status(400).json({ message: "Phone or OTP missing" });
     }
   } catch (e) {
     return res.status(500).json({ message: "Internal server error" });
@@ -197,14 +231,60 @@ app.post("/drivers/location", verifyToken, (req, res) => {
       driverId,
     });
 
+    redisClient.setEx(
+      `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`,
+      EXPIRATION.LOCATION,
+      JSON.stringify({
+        latitude,
+        longitude,
+        driverPhone,
+      })
+    );
+
     res.status(200).json({ status: "Location updated" });
   } catch (e) {
     return res.status(500).json({ message: "Internal server error" });
   }
 });
 
+// get all active drivers
+app.get("/drivers/location/all", async (req, res) => {
+  try {
+    const data = await redisClient.keys(`${REDIS_PATTERN.DRIVER_LOCATION}*`);
+    console.log(data);
+    const allActiveDrivers = data.map((item) =>
+      item.substring(DRIVER_LOCATION.length)
+    );
+    res.json(allActiveDrivers);
+  } catch (e) {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// get live location of driver by id
+app.get("/drivers/location/:id", async (req, res) => {
+  try {
+    const driverId = req.params.id;
+    const data = await redisClient.get(
+      `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`
+    );
+    res.json(data);
+  } catch (e) {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/demo", (req, res) => {
+  redisClient.setEx(
+    "photos",
+    EXPIRATION.LOCATION,
+    JSON.stringify({ message: "test redis" })
+  );
+  res.json({ info: "Ride Simulator API" });
+});
+
 app.get("/", (req, res) => {
-  response.json({ info: "Ride Simulator API" });
+  res.json({ info: "Ride Simulator API" });
 });
 
 app.listen(port, () => {
@@ -228,11 +308,14 @@ const validatePhone = (phone) => {
   return true; // Placeholder for demonstration
 };
 
-// Dummy data for driver OTP verification
-const otpMap = new Map();
 const generateOTP = (phone) => {
   // will be generating otp from any other API
   return "123456"; // default otp
 
   //   return Math.floor(100000 + Math.random() * 900000);
 };
+
+function sendOTPtoPhone(phone, otp) {
+  // In a real application, we would send this OTP to the driver's phone number via SMS
+  console.log(`OTP for ${phone}: ${otp}`);
+}
