@@ -3,6 +3,18 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const jwt = require("jsonwebtoken");
 const Redis = require("redis");
+const { Pool } = require("pg");
+const {
+  EXPIRATION,
+  REDIS_PATTERN,
+  STATUS_MESSAGES,
+} = require("./constants.js");
+const {
+  validateEmail,
+  validatePhone,
+  sendOTPtoPhone,
+  generateOTP,
+} = require("./util.js");
 
 const app = express();
 require("dotenv").config();
@@ -10,20 +22,7 @@ require("dotenv").config();
 // API port
 const port = process.env.PORT || 3000;
 
-// redis config
-const EXPIRATION = {
-  // seconds
-  DEFAULT: 30,
-  OTP: 60,
-  LOCATION: 30,
-};
-const REDIS_PATTERN = {
-  DRIVER_LOCATION: "location?driverId=",
-  OTP: "otp?phone=",
-};
-
 // Postgresql Client Initialization
-const { Pool } = require("pg");
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
@@ -55,7 +54,7 @@ const verifyToken = (req, res, next) => {
     req.driverId = decoded.driver_id;
     next();
   } catch (error) {
-    res.status(400).json({ message: "Invalid token" });
+    res.status(400).json({ message: STATUS_MESSAGES.INVALID_TOKEN });
   }
 };
 
@@ -65,11 +64,11 @@ app.post("/riders/create", async (req, res) => {
 
   // Validate email and phone
   if (!validateEmail(email)) {
-    return res.status(400).json({ message: "Invalid email format" });
+    return res.status(400).json({ message: STATUS_MESSAGES.INVALID_EMAIL });
   }
 
   if (!validatePhone(phone)) {
-    return res.status(400).json({ message: "Invalid phone number" });
+    return res.status(400).json({ message: STATUS_MESSAGES.INVALID_PHONE });
   }
 
   // Insert rider into database
@@ -87,14 +86,14 @@ app.post("/riders/create", async (req, res) => {
   } catch (error) {
     // Check if error is due to unique violation
     if (error.code === "23505" && error.constraint === "phone") {
-      return res
-        .status(409)
-        .json({ message: "Phone number already registered" });
+      return res.status(409).json({ message: STATUS_MESSAGES.CONFLICT_PHONE });
     } else if (error.code === "23505" && error.constraint === "email") {
-      return res.status(409).json({ message: "Email already registered" });
+      return res.status(409).json({ message: STATUS_MESSAGES.CONFLICT_EMAIL });
     } else {
       console.error("Error inserting rider:", error);
-      return res.status(500).json({ message: "Internal server error" });
+      return res
+        .status(500)
+        .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
     }
   }
 });
@@ -105,7 +104,7 @@ app.post("/drivers/create", async (req, res) => {
 
   // Validate phone
   if (!validatePhone(phone)) {
-    return res.status(400).json({ message: "Invalid phone number" });
+    return res.status(400).json({ message: STATUS_MESSAGES.INVALID_PHONE });
   }
 
   // Insert driver into database
@@ -123,12 +122,12 @@ app.post("/drivers/create", async (req, res) => {
   } catch (error) {
     // Check if error is due to unique violation
     if (error.code === "23505" && error.constraint === "drivers_phone_key") {
-      return res
-        .status(409)
-        .json({ message: "Phone number already registered" });
+      return res.status(409).json({ message: STATUS_MESSAGES.CONFLICT_PHONE });
     } else {
       console.error("Error inserting rider:", error);
-      return res.status(500).json({ message: "Internal server error" });
+      return res
+        .status(500)
+        .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
     }
   }
 });
@@ -138,7 +137,7 @@ app.post("/drivers/login", async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) {
-      res.status(400).json({ message: "Phone not found" });
+      res.status(400).json({ message: STATUS_MESSAGES.NOT_FOUND_PHONE });
       return;
     }
 
@@ -152,7 +151,7 @@ app.post("/drivers/login", async (req, res) => {
     client.release();
 
     if (!driverEntity) {
-      res.status(401).json({ message: "Driver not registered" });
+      res.status(401).json({ message: STATUS_MESSAGES.NOT_REGISTERED_DRIVER });
       return;
     }
 
@@ -166,9 +165,11 @@ app.post("/drivers/login", async (req, res) => {
 
     sendOTPtoPhone(phone, otp);
 
-    res.status(200).json({ message: "OTP sent successfully" });
+    res.status(200).json({ message: STATUS_MESSAGES.SUCCESS_OTP_SENT });
   } catch (e) {
-    return res.status(500).json({ message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
   }
 });
 
@@ -177,7 +178,7 @@ app.post("/riders/login", async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) {
-      res.status(400).json({ message: "Phone not found" });
+      res.status(400).json({ message: STATUS_MESSAGES.NOT_FOUND_PHONE });
       return;
     }
 
@@ -190,7 +191,7 @@ app.post("/riders/login", async (req, res) => {
     client.release();
 
     if (!riderEntity) {
-      res.status(401).json({ message: "Driver not registered" });
+      res.status(401).json({ message: STATUS_MESSAGES.NOT_REGISTERED_RIDER });
       return;
     }
 
@@ -204,9 +205,11 @@ app.post("/riders/login", async (req, res) => {
 
     sendOTPtoPhone(phone, otp);
 
-    res.status(200).json({ message: "OTP sent successfully" });
+    res.status(200).json({ message: STATUS_MESSAGES.SUCCESS_OTP_SENT });
   } catch (e) {
-    return res.status(500).json({ message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
   }
 });
 
@@ -242,18 +245,22 @@ app.post("/drivers/verify", async (req, res) => {
           res.status(200).json({ token });
         } else {
           // Driver not found in the database
-          res.status(404).json({ message: "Driver not found" });
+          res
+            .status(404)
+            .json({ message: STATUS_MESSAGES.NOT_REGISTERED_DRIVER });
         }
       } else {
         // Invalid OTP
-        res.status(400).json({ message: "Invalid OTP" });
+        res.status(400).json({ message: STATUS_MESSAGES.INVALID_OTP });
       }
     } else {
       // data missing
-      res.status(400).json({ message: "Phone or OTP missing" });
+      res.status(400).json({ message: STATUS_MESSAGES.NOT_FOUND_PHONE_OTP });
     }
   } catch (e) {
-    return res.status(500).json({ message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
   }
 });
 
@@ -289,18 +296,22 @@ app.post("/riders/verify", async (req, res) => {
           res.status(200).json({ token });
         } else {
           // Driver not found in the database
-          res.status(404).json({ message: "Driver not found" });
+          res
+            .status(404)
+            .json({ message: STATUS_MESSAGES.NOT_REGISTERED_RIDER });
         }
       } else {
         // Invalid OTP
-        res.status(400).json({ message: "Invalid OTP" });
+        res.status(400).json({ message: STATUS_MESSAGES.INVALID_OTP });
       }
     } else {
       // data missing
-      res.status(400).json({ message: "Phone or OTP missing" });
+      res.status(400).json({ message: STATUS_MESSAGES.NOT_FOUND_PHONE_OTP });
     }
   } catch (e) {
-    return res.status(500).json({ message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
   }
 });
 
@@ -326,9 +337,11 @@ app.post("/drivers/location", verifyToken, (req, res) => {
       })
     );
 
-    res.status(200).json({ status: "Location updated" });
+    res.status(200).json({ status: STATUS_MESSAGES.SUCCESS_LOCATION });
   } catch (e) {
-    return res.status(500).json({ message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
   }
 });
 
@@ -343,7 +356,9 @@ app.get("/drivers/location/all", async (req, res) => {
     );
     res.json(allActiveDrivers);
   } catch (e) {
-    return res.status(500).json({ message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
   }
 });
 
@@ -355,19 +370,12 @@ app.get("/drivers/location/:id", verifyToken, async (req, res) => {
       `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`
     );
     if (data) res.status(200).json(JSON.parse(data));
-    else res.status(404).json({ message: "Driver not active" });
+    else res.status(404).json({ message: STATUS_MESSAGES.INACTIVE_DRIVER });
   } catch (e) {
-    return res.status(500).json({ message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ message: STATUS_MESSAGES.INTERNAL_SERVER_ERROR });
   }
-});
-
-app.get("/demo", (req, res) => {
-  redisClient.setEx(
-    "photos",
-    EXPIRATION.LOCATION,
-    JSON.stringify({ message: "test redis" })
-  );
-  res.json({ info: "Ride Simulator API" });
 });
 
 app.get("/", (req, res) => {
@@ -377,32 +385,3 @@ app.get("/", (req, res) => {
 app.listen(port, () => {
   console.log(`App running on port ${port}.`);
 });
-
-/*
- Utils
-*/
-
-// Validate email function
-const validateEmail = (email) => {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-};
-
-// Validate phone function
-const validatePhone = (phone) => {
-  if (phone.length != 11) return false;
-  if (!phone.startsWith("01")) return false;
-  return true; // Placeholder for demonstration
-};
-
-const generateOTP = (phone) => {
-  // will be generating otp from any other API
-  return "123456"; // default otp
-
-  //   return Math.floor(100000 + Math.random() * 900000);
-};
-
-function sendOTPtoPhone(phone, otp) {
-  // In a real application, we would send this OTP to the driver's phone number via SMS
-  console.log(`OTP for ${phone}: ${otp}`);
-}
