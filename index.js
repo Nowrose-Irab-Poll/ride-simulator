@@ -46,12 +46,14 @@ app.use(
 // Middleware to verify JWT token
 const verifyToken = (req, res, next) => {
   const token = req.headers?.token;
-  if (!token) return res.status(401).json({ message: "Unauthorized" });
+  if (!token)
+    return res.status(401).json({ message: STATUS_MESSAGES.UNAUTHORIZED });
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.driverPhone = decoded.phone;
-    req.driverId = decoded.driver_id;
+    // req.phone = decoded.phone;
+    // req.id = decoded.driver_id;
+    req.decoded = decoded;
     next();
   } catch (error) {
     res.status(400).json({ message: STATUS_MESSAGES.INVALID_TOKEN });
@@ -235,6 +237,7 @@ app.post("/drivers/verify", async (req, res) => {
 
         if (result.rows.length > 0) {
           const driverEntity = result.rows[0];
+          driverEntity.role = "driver";
           // Driver exists, generate JWT token
           const token = jwt.sign(driverEntity, process.env.JWT_SECRET, {
             expiresIn: "1h",
@@ -286,6 +289,7 @@ app.post("/riders/verify", async (req, res) => {
 
         if (result.rows.length > 0) {
           const riderEntity = result.rows[0];
+          riderEntity.role = "rider";
           // Driver exists, generate JWT token
           const token = jwt.sign(riderEntity, process.env.JWT_SECRET, {
             expiresIn: "1h",
@@ -319,21 +323,24 @@ app.post("/riders/verify", async (req, res) => {
 app.post("/drivers/location", verifyToken, (req, res) => {
   try {
     const { latitude, longitude } = req.body;
-    const { driverPhone, driverId } = req;
+    const { phone, driver_id, role } = req.decoded;
     console.log("Location Ping:", {
       latitude,
       longitude,
-      driverPhone,
-      driverId,
+      phone,
+      driver_id,
+      role,
     });
 
+    // updating driver's location in redis
     redisClient.setEx(
-      `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`,
+      `${REDIS_PATTERN.DRIVER_LOCATION}${driver_id}`,
       EXPIRATION.LOCATION,
       JSON.stringify({
         latitude,
         longitude,
-        driverPhone,
+        phone,
+        role,
       })
     );
 
@@ -349,6 +356,7 @@ app.post("/drivers/location", verifyToken, (req, res) => {
 // for debugging purpose, so no token verification added
 app.get("/drivers/location/all", async (req, res) => {
   try {
+    // fetching all active drivers from  redis
     const data = await redisClient.keys(`${REDIS_PATTERN.DRIVER_LOCATION}*`);
     console.log(data);
     const allActiveDrivers = data.map((item) =>
@@ -365,12 +373,23 @@ app.get("/drivers/location/all", async (req, res) => {
 // get live location of driver by id
 app.get("/drivers/location/:id", verifyToken, async (req, res) => {
   try {
-    const driverId = req.params.id;
-    const data = await redisClient.get(
-      `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`
-    );
-    if (data) res.status(200).json(JSON.parse(data));
-    else res.status(404).json({ message: STATUS_MESSAGES.INACTIVE_DRIVER });
+    // fetching driver's live location from  redis
+    const { phone, rider_id, role } = req.decoded;
+
+    // check if rider or not
+    if (role == "rider") {
+      const driverId = req.params.id;
+      console.log("Request received from:", { phone, rider_id, role }, "for:", {
+        driverId,
+      });
+      const data = await redisClient.get(
+        `${REDIS_PATTERN.DRIVER_LOCATION}${driverId}`
+      );
+      if (data) res.status(200).json(JSON.parse(data));
+      else res.status(404).json({ message: STATUS_MESSAGES.INACTIVE_DRIVER });
+    } else {
+      res.status(401).json({ message: STATUS_MESSAGES.UNAUTHORIZED });
+    }
   } catch (e) {
     return res
       .status(500)

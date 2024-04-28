@@ -26,6 +26,7 @@ const STATUS_MESSAGES = {
   SUCCESS_OTP_SENT: "OTP sent successfully",
   SUCCESS_LOCATION: "Location updated",
   INACTIVE_DRIVER: "Driver not online",
+  UNAUTHORIZED: "Unauthorized",
 };
 
 module.exports = { EXPIRATION, REDIS_PATTERN, STATUS_MESSAGES };
