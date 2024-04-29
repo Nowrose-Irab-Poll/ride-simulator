@@ -519,18 +519,46 @@ app.patch("/rides/update/:id", verifyToken, async (req, res) => {
     const newStatus = req.body.status;
     console.log({ rideId, newStatus });
 
-    if (!DRIVER_RIDE_STATUS.has(newStatus)) {
+    if (!DRIVER_RIDE_STATUS.get(newStatus)) {
       return res
         .status(401)
         .json({ message: STATUS_MESSAGES.INVALID_RIDE_STATUS });
     }
-    // Update ride status into database
-
     const client = await pool.connect();
-    const query =
+
+    // check current ride status
+    const getRideStatusQuery =
+      "SELECT ride_status FROM Rides WHERE ride_id = $1";
+    const rideStatusQueryValues = [rideId];
+    const rideStatusResult = await client.query(
+      getRideStatusQuery,
+      rideStatusQueryValues
+    );
+
+    const rideStatusEntity = rideStatusResult.rows[0];
+
+    // making sure that ride status only moves forward
+    if (
+      DRIVER_RIDE_STATUS.get(newStatus) ==
+      DRIVER_RIDE_STATUS.get(rideStatusEntity.ride_status)
+    ) {
+      return res
+        .status(302)
+        .json({ message: STATUS_MESSAGES.UNMODIFIED_RIDE_STATUS });
+    } else if (
+      DRIVER_RIDE_STATUS.get(newStatus) <
+      DRIVER_RIDE_STATUS.get(rideStatusEntity.ride_status)
+    ) {
+      return res
+        .status(401)
+        .json({ message: STATUS_MESSAGES.INVALID_RIDE_STATUS });
+    }
+
+    // Update ride status into database
+    const updateQuery =
       "UPDATE Rides SET ride_status = $1, driver_id = $2 WHERE ride_id = $3 RETURNING *";
     const values = [newStatus, driver_id, rideId];
-    const result = await client.query(query, values);
+    const result = await client.query(updateQuery, values);
     client.release();
 
     const rideEntity = result.rows[0];

@@ -28,7 +28,8 @@ const STATUS_MESSAGES = {
   INACTIVE_DRIVER: "Driver not online",
   UNAUTHORIZED: "Unauthorized",
   NOT_FOUND_LAT_LON: "Latitude or Longitude not found",
-  INVALID_RIDE_STATUS: "Invalide Ride Status",
+  INVALID_RIDE_STATUS: "Invalid Ride Status",
+  UNMODIFIED_RIDE_STATUS: "Unmodified Ride Status",
 };
 
 const RIDE_STATUS = {
@@ -38,11 +39,13 @@ const RIDE_STATUS = {
   END: "end",
   CANCEL: "cancel",
 };
-const DRIVER_RIDE_STATUS = new Set([
-  RIDE_STATUS.ACCEPT,
-  RIDE_STATUS.START,
-  RIDE_STATUS.END,
-  RIDE_STATUS.CANCEL,
+
+// ride status and its levels. only incremental level change is allowed
+const DRIVER_RIDE_STATUS = new Map([
+  [RIDE_STATUS.ACCEPT, 1],
+  [RIDE_STATUS.START, 2],
+  [RIDE_STATUS.END, 3],
+  [RIDE_STATUS.CANCEL, 4],
 ]);
 
 module.exports = {
