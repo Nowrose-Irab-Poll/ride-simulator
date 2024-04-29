@@ -27,6 +27,12 @@ function sendOTPtoPhone(phone, otp) {
   console.log(`OTP for ${phone}: ${otp}`);
 }
 
+function matchOTP(sentOTP, receivedOTP) {
+  console.log(typeof sentOTP);
+  console.log(typeof receivedOTP);
+  return sentOTP + "" == receivedOTP + "";
+}
+
 // Calculate distance between two points using Haversine formula
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
   const R = 6371; // Radius of the Earth in kilometers
@@ -77,4 +83,5 @@ module.exports = {
   generateOTP,
   calculateDistance,
   findNearestDriver,
+  matchOTP,
 };

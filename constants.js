@@ -28,6 +28,27 @@ const STATUS_MESSAGES = {
   INACTIVE_DRIVER: "Driver not online",
   UNAUTHORIZED: "Unauthorized",
   NOT_FOUND_LAT_LON: "Latitude or Longitude not found",
+  INVALID_RIDE_STATUS: "Invalide Ride Status",
 };
 
-module.exports = { EXPIRATION, REDIS_PATTERN, STATUS_MESSAGES };
+const RIDE_STATUS = {
+  REQUESTED: "requested",
+  ACCEPT: "accept",
+  START: "start",
+  END: "end",
+  CANCEL: "cancel",
+};
+const DRIVER_RIDE_STATUS = new Set([
+  RIDE_STATUS.ACCEPT,
+  RIDE_STATUS.START,
+  RIDE_STATUS.END,
+  RIDE_STATUS.CANCEL,
+]);
+
+module.exports = {
+  EXPIRATION,
+  REDIS_PATTERN,
+  STATUS_MESSAGES,
+  RIDE_STATUS,
+  DRIVER_RIDE_STATUS,
+};
