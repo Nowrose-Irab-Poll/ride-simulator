@@ -35,7 +35,13 @@ const pool = new Pool({
 });
 
 // Redis Client Initiazation
-const redisClient = Redis.createClient();
+const redisClient = Redis.createClient({
+  host: "redis", // This should match the service name defined in docker-compose.yml
+  port: 6379,
+});
+redisClient.on("connect", () => {
+  console.log("Connected to Redis");
+});
 redisClient.on("error", (err) => console.log("Redis Client Error", err));
 redisClient.connect();
 
